@@ -3,7 +3,7 @@ package slackevents
 import (
 	"encoding/json"
 
-	"github.com/nlopes/slack"
+	"github.com/slack-go/slack"
 )
 
 type MessageActionResponse struct {
@@ -15,6 +15,7 @@ type MessageActionResponse struct {
 type MessageActionEntity struct {
 	ID     string `json:"id"`
 	Domain string `json:"domain"`
+	Name   string `json:"name"`
 }
 
 type MessageAction struct {

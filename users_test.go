@@ -40,19 +40,19 @@ func getTestUserProfile() UserProfile {
 		RealNameNormalized:    "Test Real Name Normalized",
 		DisplayName:           "Test Display Name",
 		DisplayNameNormalized: "Test Display Name Normalized",
-		Email:    "test@test.com",
-		Image24:  "https://s3-us-west-2.amazonaws.com/slack-files2/avatars/2016-10-18/92962080834_ef14c1469fc0741caea1_24.jpg",
-		Image32:  "https://s3-us-west-2.amazonaws.com/slack-files2/avatars/2016-10-18/92962080834_ef14c1469fc0741caea1_32.jpg",
-		Image48:  "https://s3-us-west-2.amazonaws.com/slack-files2/avatars/2016-10-18/92962080834_ef14c1469fc0741caea1_48.jpg",
-		Image72:  "https://s3-us-west-2.amazonaws.com/slack-files2/avatars/2016-10-18/92962080834_ef14c1469fc0741caea1_72.jpg",
-		Image192: "https://s3-us-west-2.amazonaws.com/slack-files2/avatars/2016-10-18/92962080834_ef14c1469fc0741caea1_192.jpg",
-		Fields:   getTestUserProfileCustomFields(),
+		Email:                 "test@test.com",
+		Image24:               "https://s3-us-west-2.amazonaws.com/slack-files2/avatars/2016-10-18/92962080834_ef14c1469fc0741caea1_24.jpg",
+		Image32:               "https://s3-us-west-2.amazonaws.com/slack-files2/avatars/2016-10-18/92962080834_ef14c1469fc0741caea1_32.jpg",
+		Image48:               "https://s3-us-west-2.amazonaws.com/slack-files2/avatars/2016-10-18/92962080834_ef14c1469fc0741caea1_48.jpg",
+		Image72:               "https://s3-us-west-2.amazonaws.com/slack-files2/avatars/2016-10-18/92962080834_ef14c1469fc0741caea1_72.jpg",
+		Image192:              "https://s3-us-west-2.amazonaws.com/slack-files2/avatars/2016-10-18/92962080834_ef14c1469fc0741caea1_192.jpg",
+		Fields:                getTestUserProfileCustomFields(),
 	}
 }
 
-func getTestUser() User {
+func getTestUserWithId(id string) User {
 	return User{
-		ID:                "UXXXXXXXX",
+		ID:                id,
 		Name:              "Test User",
 		Deleted:           false,
 		Color:             "9f69e7",
@@ -67,8 +67,13 @@ func getTestUser() User {
 		IsPrimaryOwner:    false,
 		IsRestricted:      false,
 		IsUltraRestricted: false,
+		Updated:           1555425715,
 		Has2FA:            false,
 	}
+}
+
+func getTestUser() User {
+	return getTestUserWithId("UXXXXXXXX")
 }
 
 func getUserIdentity(rw http.ResponseWriter, r *http.Request) {
@@ -100,6 +105,18 @@ func getUserIdentity(rw http.ResponseWriter, r *http.Request) {
     "image_original": "https:\/\/s3-us-west-2.amazonaws.com\/slack-files2\/avatars\/2016-10-18\/92962080834_ef14c1469fc0741caea1_original.jpg"
   }
 }`)
+	rw.Write(response)
+}
+
+func getUserInfo(rw http.ResponseWriter, r *http.Request) {
+	rw.Header().Set("Content-Type", "application/json")
+	response, _ := json.Marshal(struct {
+		Ok   bool `json:"ok"`
+		User User `json:"user"`
+	}{
+		Ok:   true,
+		User: getTestUser(),
+	})
 	rw.Write(response)
 }
 
@@ -145,6 +162,15 @@ func newProfileHandler(up *UserProfile) (setter func(http.ResponseWriter, *http.
 
 		values := r.Form
 
+		if len(values["user"]) == 0 {
+			httpTestErrReply(w, true, `POST data must include a "user" field`)
+			return
+		}
+		if up.RealName != "" && values["user"][0] != up.RealName {
+			httpTestErrReply(w, true, fmt.Sprintf(`POST data field "user" expected to be %q but got %q`, up.RealName, values["user"][0]))
+			return
+		}
+
 		if len(values["profile"]) == 0 {
 			httpTestErrReply(w, true, `POST data must include a "profile" field`)
 			return
@@ -170,8 +196,7 @@ func TestGetUserIdentity(t *testing.T) {
 	http.HandleFunc("/users.identity", getUserIdentity)
 
 	once.Do(startServer)
-	APIURL = "http://" + serverAddr + "/"
-	api := New("testing-token")
+	api := New("testing-token", OptionAPIURL("http://"+serverAddr+"/"))
 
 	identity, err := api.GetUserIdentity()
 	if err != nil {
@@ -206,13 +231,29 @@ func TestGetUserIdentity(t *testing.T) {
 	}
 }
 
+func TestGetUserInfo(t *testing.T) {
+	http.HandleFunc("/users.info", getUserInfo)
+	expectedUser := getTestUser()
+
+	once.Do(startServer)
+	api := New("testing-token", OptionAPIURL("http://"+serverAddr+"/"))
+
+	user, err := api.GetUserInfo("UXXXXXXXX")
+	if err != nil {
+		t.Errorf("Unexpected error: %s", err)
+		return
+	}
+	if !reflect.DeepEqual(expectedUser, *user) {
+		t.Fatal(ErrIncorrectResponse)
+	}
+}
+
 func TestGetUserByEmail(t *testing.T) {
 	http.HandleFunc("/users.lookupByEmail", getUserByEmail)
 	expectedUser := getTestUser()
 
 	once.Do(startServer)
-	APIURL = "http://" + serverAddr + "/"
-	api := New("testing-token")
+	api := New("testing-token", OptionAPIURL("http://"+serverAddr+"/"))
 
 	user, err := api.GetUserByEmail("test@test.com")
 	if err != nil {
@@ -232,21 +273,23 @@ func TestUserCustomStatus(t *testing.T) {
 	http.HandleFunc("/users.profile.set", setUserProfile)
 
 	once.Do(startServer)
-	APIURL = "http://" + serverAddr + "/"
-	api := New("testing-token")
+	api := New("testing-token", OptionAPIURL("http://"+serverAddr+"/"))
 
 	testSetUserCustomStatus(api, up, t)
 	testUnsetUserCustomStatus(api, up, t)
+
+	up.RealName = "Test User"
+	testSetUserCustomStatusWithUser(api, "Test User", up, t)
 }
 
 func testSetUserCustomStatus(api *Client, up *UserProfile, t *testing.T) {
 	const (
-		statusText  = "testStatus"
-		statusEmoji = ":construction:"
+		statusText       = "testStatus"
+		statusEmoji      = ":construction:"
+		statusExpiration = 1551619082
 	)
-
-	if err := api.SetUserCustomStatus(statusText, statusEmoji); err != nil {
-		t.Fatalf(`SetUserCustomStatus(%q, %q) = %#v, want <nil>`, statusText, statusEmoji, err)
+	if err := api.SetUserCustomStatus(statusText, statusEmoji, statusExpiration); err != nil {
+		t.Fatalf(`SetUserCustomStatus(%q, %q, %q) = %#v, want <nil>`, statusText, statusEmoji, statusExpiration, err)
 	}
 
 	if up.StatusText != statusText {
@@ -255,6 +298,31 @@ func testSetUserCustomStatus(api *Client, up *UserProfile, t *testing.T) {
 
 	if up.StatusEmoji != statusEmoji {
 		t.Fatalf(`UserProfile.StatusEmoji = %q, want %q`, up.StatusEmoji, statusEmoji)
+	}
+	if up.StatusExpiration != statusExpiration {
+		t.Fatalf(`UserProfile.StatusExpiration = %q, want %q`, up.StatusExpiration, statusExpiration)
+	}
+}
+
+func testSetUserCustomStatusWithUser(api *Client, user string, up *UserProfile, t *testing.T) {
+	const (
+		statusText       = "testStatus"
+		statusEmoji      = ":construction:"
+		statusExpiration = 1551619082
+	)
+	if err := api.SetUserCustomStatusWithUser(user, statusText, statusEmoji, statusExpiration); err != nil {
+		t.Fatalf(`SetUserCustomStatusWithUser(%q, %q, %q, %q) = %#v, want <nil>`, user, statusText, statusEmoji, statusExpiration, err)
+	}
+
+	if up.StatusText != statusText {
+		t.Fatalf(`UserProfile.StatusText = %q, want %q`, up.StatusText, statusText)
+	}
+
+	if up.StatusEmoji != statusEmoji {
+		t.Fatalf(`UserProfile.StatusEmoji = %q, want %q`, up.StatusEmoji, statusEmoji)
+	}
+	if up.StatusExpiration != statusExpiration {
+		t.Fatalf(`UserProfile.StatusExpiration = %q, want %q`, up.StatusExpiration, statusExpiration)
 	}
 }
 
@@ -273,12 +341,11 @@ func testUnsetUserCustomStatus(api *Client, up *UserProfile, t *testing.T) {
 }
 
 func TestGetUsers(t *testing.T) {
+	http.DefaultServeMux = new(http.ServeMux)
 	http.HandleFunc("/users.list", getUserPage(4))
-	expectedUser := getTestUser()
 
 	once.Do(startServer)
-	APIURL = "http://" + serverAddr + "/"
-	api := New("testing-token")
+	api := New("testing-token", OptionAPIURL("http://"+serverAddr+"/"))
 
 	users, err := api.GetUsers()
 	if err != nil {
@@ -286,7 +353,12 @@ func TestGetUsers(t *testing.T) {
 		return
 	}
 
-	if !reflect.DeepEqual([]User{expectedUser, expectedUser, expectedUser, expectedUser}, users) {
+	if !reflect.DeepEqual([]User{
+		getTestUserWithId("U000"),
+		getTestUserWithId("U001"),
+		getTestUserWithId("U002"),
+		getTestUserWithId("U003"),
+	}, users) {
 		t.Fatal(ErrIncorrectResponse)
 	}
 }
@@ -300,7 +372,45 @@ func getUserPage(max int64) func(rw http.ResponseWriter, r *http.Request) {
 			Ok: true,
 		}
 		members := []User{
-			getTestUser(),
+			getTestUserWithId(fmt.Sprintf("U%03d", n)),
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		if cpage = atomic.AddInt64(&n, 1); cpage == max {
+			response, _ := json.Marshal(userResponseFull{
+				SlackResponse: sresp,
+				Members:       members,
+			})
+			rw.Write(response)
+			return
+		}
+		response, _ := json.Marshal(userResponseFull{
+			SlackResponse: sresp,
+			Members:       members,
+			Metadata:      ResponseMetadata{Cursor: strconv.Itoa(int(cpage))},
+		})
+		rw.Write(response)
+	}
+}
+
+// returns n pages of users and sends rate limited errors in between successful pages.
+func getUserPagesWithRateLimitErrors(max int64) func(rw http.ResponseWriter, r *http.Request) {
+	var n int64
+	doRateLimit := false
+	return func(rw http.ResponseWriter, r *http.Request) {
+		defer func() {
+			doRateLimit = !doRateLimit
+		}()
+		if doRateLimit {
+			rw.Header().Set("Retry-After", "1")
+			rw.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		var cpage int64
+		sresp := SlackResponse{
+			Ok: true,
+		}
+		members := []User{
+			getTestUserWithId(fmt.Sprintf("U%03d", n)),
 		}
 		rw.Header().Set("Content-Type", "application/json")
 		if cpage = atomic.AddInt64(&n, 1); cpage == max {
@@ -329,8 +439,7 @@ func TestSetUserPhoto(t *testing.T) {
 	http.HandleFunc("/users.setPhoto", setUserPhotoHandler(fileContent, params))
 
 	once.Do(startServer)
-	APIURL = "http://" + serverAddr + "/"
-	api := New(validToken)
+	api := New(validToken, OptionAPIURL("http://"+serverAddr+"/"))
 
 	err := api.SetUserPhoto(file.Name(), params)
 	if err != nil {
@@ -436,8 +545,7 @@ func getUserProfileHandler(rw http.ResponseWriter, r *http.Request) {
 func TestGetUserProfile(t *testing.T) {
 	http.HandleFunc("/users.profile.get", getUserProfileHandler)
 	once.Do(startServer)
-	APIURL = "http://" + serverAddr + "/"
-	api := New("testing-token")
+	api := New("testing-token", OptionAPIURL("http://"+serverAddr+"/"))
 	profile, err := api.GetUserProfile("UXXXXXXXX", false)
 	if err != nil {
 		t.Fatalf("Unexpected error: %s", err)
@@ -524,5 +632,50 @@ func TestUserProfileCustomFieldsSetMap(t *testing.T) {
 	fields.SetMap(m)
 	if !reflect.DeepEqual(fields.fields, m) {
 		t.Fatalf(`fields.fields = %v, wanted %v`, fields.fields, m)
+	}
+}
+
+func TestGetUsersHandlesRateLimit(t *testing.T) {
+	http.DefaultServeMux = new(http.ServeMux)
+	http.HandleFunc("/users.list", getUserPagesWithRateLimitErrors(4))
+
+	once.Do(startServer)
+	api := New("testing-token", OptionAPIURL("http://"+serverAddr+"/"))
+
+	users, err := api.GetUsers()
+	if err != nil {
+		t.Errorf("Unexpected error: %s", err)
+		return
+	}
+
+	if !reflect.DeepEqual([]User{
+		getTestUserWithId("U000"),
+		getTestUserWithId("U001"),
+		getTestUserWithId("U002"),
+		getTestUserWithId("U003"),
+	}, users) {
+		t.Fatal(ErrIncorrectResponse)
+	}
+}
+
+func TestGetUsersReturnsServerError(t *testing.T) {
+	http.DefaultServeMux = new(http.ServeMux)
+	http.HandleFunc("/users.list", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	once.Do(startServer)
+	api := New("testing-token", OptionAPIURL("http://"+serverAddr+"/"))
+
+	_, err := api.GetUsers()
+
+	if err == nil {
+		t.Errorf("Expected error but got nil")
+		return
+	}
+
+	expectedErr := "slack server error: 500 Internal Server Error"
+	if err.Error() != expectedErr {
+		t.Errorf("Expected: %s. Got: %s", expectedErr, err.Error())
 	}
 }

@@ -2,9 +2,9 @@ package slack
 
 import (
 	"context"
-	"errors"
 	"net/url"
 	"strconv"
+	"time"
 )
 
 type channelResponseFull struct {
@@ -15,27 +15,45 @@ type channelResponseFull struct {
 	NotInChannel bool      `json:"not_in_channel"`
 	History
 	SlackResponse
+	Metadata ResponseMetadata `json:"response_metadata"`
 }
 
 // Channel contains information about the channel
 type Channel struct {
-	groupConversation
+	GroupConversation
 	IsChannel bool   `json:"is_channel"`
 	IsGeneral bool   `json:"is_general"`
 	IsMember  bool   `json:"is_member"`
 	Locale    string `json:"locale"`
 }
 
-func channelRequest(ctx context.Context, client httpClient, path string, values url.Values, d debug) (*channelResponseFull, error) {
+func (api *Client) channelRequest(ctx context.Context, path string, values url.Values) (*channelResponseFull, error) {
 	response := &channelResponseFull{}
-	err := postForm(ctx, client, APIURL+path, values, response, d)
+	err := postForm(ctx, api.httpclient, api.endpoint+path, values, response, api)
 	if err != nil {
 		return nil, err
 	}
-	if !response.Ok {
-		return nil, errors.New(response.Error)
+
+	return response, response.Err()
+}
+
+// GetChannelsOption option provided when getting channels.
+type GetChannelsOption func(*ChannelPagination) error
+
+// GetChannelsOptionExcludeMembers excludes the members collection from each channel.
+func GetChannelsOptionExcludeMembers() GetChannelsOption {
+	return func(p *ChannelPagination) error {
+		p.excludeMembers = true
+		return nil
 	}
-	return response, nil
+}
+
+// GetChannelsOptionExcludeArchived excludes archived channels from results.
+func GetChannelsOptionExcludeArchived() GetChannelsOption {
+	return func(p *ChannelPagination) error {
+		p.excludeArchived = true
+		return nil
+	}
 }
 
 // ArchiveChannel archives the given channel
@@ -52,7 +70,7 @@ func (api *Client) ArchiveChannelContext(ctx context.Context, channelID string) 
 		"channel": {channelID},
 	}
 
-	_, err = channelRequest(ctx, api.httpclient, "channels.archive", values, api)
+	_, err = api.channelRequest(ctx, "channels.archive", values)
 	return err
 }
 
@@ -70,7 +88,7 @@ func (api *Client) UnarchiveChannelContext(ctx context.Context, channelID string
 		"channel": {channelID},
 	}
 
-	_, err = channelRequest(ctx, api.httpclient, "channels.unarchive", values, api)
+	_, err = api.channelRequest(ctx, "channels.unarchive", values)
 	return err
 }
 
@@ -88,7 +106,7 @@ func (api *Client) CreateChannelContext(ctx context.Context, channelName string)
 		"name":  {channelName},
 	}
 
-	response, err := channelRequest(ctx, api.httpclient, "channels.create", values, api)
+	response, err := api.channelRequest(ctx, "channels.create", values)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +151,7 @@ func (api *Client) GetChannelHistoryContext(ctx context.Context, channelID strin
 		}
 	}
 
-	response, err := channelRequest(ctx, api.httpclient, "channels.history", values, api)
+	response, err := api.channelRequest(ctx, "channels.history", values)
 	if err != nil {
 		return nil, err
 	}
@@ -150,11 +168,12 @@ func (api *Client) GetChannelInfo(channelID string) (*Channel, error) {
 // see https://api.slack.com/methods/channels.info
 func (api *Client) GetChannelInfoContext(ctx context.Context, channelID string) (*Channel, error) {
 	values := url.Values{
-		"token":   {api.token},
-		"channel": {channelID},
+		"token":          {api.token},
+		"channel":        {channelID},
+		"include_locale": {strconv.FormatBool(true)},
 	}
 
-	response, err := channelRequest(ctx, api.httpclient, "channels.info", values, api)
+	response, err := api.channelRequest(ctx, "channels.info", values)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +195,7 @@ func (api *Client) InviteUserToChannelContext(ctx context.Context, channelID, us
 		"user":    {user},
 	}
 
-	response, err := channelRequest(ctx, api.httpclient, "channels.invite", values, api)
+	response, err := api.channelRequest(ctx, "channels.invite", values)
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +216,7 @@ func (api *Client) JoinChannelContext(ctx context.Context, channelName string) (
 		"name":  {channelName},
 	}
 
-	response, err := channelRequest(ctx, api.httpclient, "channels.join", values, api)
+	response, err := api.channelRequest(ctx, "channels.join", values)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +237,7 @@ func (api *Client) LeaveChannelContext(ctx context.Context, channelID string) (b
 		"channel": {channelID},
 	}
 
-	response, err := channelRequest(ctx, api.httpclient, "channels.leave", values, api)
+	response, err := api.channelRequest(ctx, "channels.leave", values)
 	if err != nil {
 		return false, err
 	}
@@ -241,31 +260,111 @@ func (api *Client) KickUserFromChannelContext(ctx context.Context, channelID, us
 		"user":    {user},
 	}
 
-	_, err = channelRequest(ctx, api.httpclient, "channels.kick", values, api)
+	_, err = api.channelRequest(ctx, "channels.kick", values)
 	return err
+}
+
+func newChannelPagination(c *Client, options ...GetChannelsOption) (cp ChannelPagination) {
+	cp = ChannelPagination{
+		c:     c,
+		limit: 200, // per slack api documentation.
+	}
+
+	for _, opt := range options {
+		opt(&cp)
+	}
+
+	return cp
+}
+
+// ChannelPagination allows for paginating over the channels
+type ChannelPagination struct {
+	Channels        []Channel
+	limit           int
+	excludeArchived bool
+	excludeMembers  bool
+	previousResp    *ResponseMetadata
+	c               *Client
+}
+
+// Done checks if the pagination has completed
+func (ChannelPagination) Done(err error) bool {
+	return err == errPaginationComplete
+}
+
+// Failure checks if pagination failed.
+func (t ChannelPagination) Failure(err error) error {
+	if t.Done(err) {
+		return nil
+	}
+
+	return err
+}
+
+func (t ChannelPagination) Next(ctx context.Context) (_ ChannelPagination, err error) {
+	var (
+		resp *channelResponseFull
+	)
+
+	if t.c == nil || (t.previousResp != nil && t.previousResp.Cursor == "") {
+		return t, errPaginationComplete
+	}
+
+	t.previousResp = t.previousResp.initialize()
+
+	values := url.Values{
+		"limit":            {strconv.Itoa(t.limit)},
+		"exclude_archived": {strconv.FormatBool(t.excludeArchived)},
+		"exclude_members":  {strconv.FormatBool(t.excludeMembers)},
+		"token":            {t.c.token},
+		"cursor":           {t.previousResp.Cursor},
+	}
+
+	if resp, err = t.c.channelRequest(ctx, "channels.list", values); err != nil {
+		return t, err
+	}
+
+	t.c.Debugf("GetChannelsContext: got %d channels; metadata %v", len(resp.Channels), resp.Metadata)
+	t.Channels = resp.Channels
+	t.previousResp = &resp.Metadata
+
+	return t, nil
+}
+
+// GetChannelsPaginated fetches channels in a paginated fashion, see GetChannelsContext for usage.
+func (api *Client) GetChannelsPaginated(options ...GetChannelsOption) ChannelPagination {
+	return newChannelPagination(api, options...)
 }
 
 // GetChannels retrieves all the channels
 // see https://api.slack.com/methods/channels.list
-func (api *Client) GetChannels(excludeArchived bool) ([]Channel, error) {
-	return api.GetChannelsContext(context.Background(), excludeArchived)
+func (api *Client) GetChannels(excludeArchived bool, options ...GetChannelsOption) ([]Channel, error) {
+	return api.GetChannelsContext(context.Background(), excludeArchived, options...)
 }
 
 // GetChannelsContext retrieves all the channels with a custom context
 // see https://api.slack.com/methods/channels.list
-func (api *Client) GetChannelsContext(ctx context.Context, excludeArchived bool) ([]Channel, error) {
-	values := url.Values{
-		"token": {api.token},
-	}
+func (api *Client) GetChannelsContext(ctx context.Context, excludeArchived bool, options ...GetChannelsOption) (results []Channel, err error) {
 	if excludeArchived {
-		values.Add("exclude_archived", "1")
+		options = append(options, GetChannelsOptionExcludeArchived())
 	}
 
-	response, err := channelRequest(ctx, api.httpclient, "channels.list", values, api)
-	if err != nil {
-		return nil, err
+	p := api.GetChannelsPaginated(options...)
+	for err == nil {
+		p, err = p.Next(ctx)
+		if err == nil {
+			results = append(results, p.Channels...)
+		} else if rateLimitedError, ok := err.(*RateLimitedError); ok {
+			select {
+			case <-ctx.Done():
+				err = ctx.Err()
+			case <-time.After(rateLimitedError.RetryAfter):
+				err = nil
+			}
+		}
 	}
-	return response.Channels, nil
+
+	return results, p.Failure(err)
 }
 
 // SetChannelReadMark sets the read mark of a given channel to a specific point
@@ -288,7 +387,7 @@ func (api *Client) SetChannelReadMarkContext(ctx context.Context, channelID, ts 
 		"ts":      {ts},
 	}
 
-	_, err = channelRequest(ctx, api.httpclient, "channels.mark", values, api)
+	_, err = api.channelRequest(ctx, "channels.mark", values)
 	return err
 }
 
@@ -309,7 +408,7 @@ func (api *Client) RenameChannelContext(ctx context.Context, channelID, name str
 
 	// XXX: the created entry in this call returns a string instead of a number
 	// so I may have to do some workaround to solve it.
-	response, err := channelRequest(ctx, api.httpclient, "channels.rename", values, api)
+	response, err := api.channelRequest(ctx, "channels.rename", values)
 	if err != nil {
 		return nil, err
 	}
@@ -331,7 +430,7 @@ func (api *Client) SetChannelPurposeContext(ctx context.Context, channelID, purp
 		"purpose": {purpose},
 	}
 
-	response, err := channelRequest(ctx, api.httpclient, "channels.setPurpose", values, api)
+	response, err := api.channelRequest(ctx, "channels.setPurpose", values)
 	if err != nil {
 		return "", err
 	}
@@ -353,7 +452,7 @@ func (api *Client) SetChannelTopicContext(ctx context.Context, channelID, topic 
 		"topic":   {topic},
 	}
 
-	response, err := channelRequest(ctx, api.httpclient, "channels.setTopic", values, api)
+	response, err := api.channelRequest(ctx, "channels.setTopic", values)
 	if err != nil {
 		return "", err
 	}
@@ -374,7 +473,7 @@ func (api *Client) GetChannelRepliesContext(ctx context.Context, channelID, thre
 		"channel":   {channelID},
 		"thread_ts": {thread_ts},
 	}
-	response, err := channelRequest(ctx, api.httpclient, "channels.replies", values, api)
+	response, err := api.channelRequest(ctx, "channels.replies", values)
 	if err != nil {
 		return nil, err
 	}

@@ -2,7 +2,11 @@
 
 package slackevents
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/slack-go/slack"
+)
 
 // EventsAPIInnerEvent the inner event of a EventsAPI event_callback Event.
 type EventsAPIInnerEvent struct {
@@ -19,6 +23,16 @@ type AppMentionEvent struct {
 	ThreadTimeStamp string      `json:"thread_ts"`
 	Channel         string      `json:"channel"`
 	EventTimeStamp  json.Number `json:"event_ts"`
+}
+
+// AppHomeOpenedEvent Your Slack app home was opened.
+type AppHomeOpenedEvent struct {
+	Type           string      `json:"type"`
+	User           string      `json:"user"`
+	Channel        string      `json:"channel"`
+	EventTimeStamp json.Number `json:"event_ts"`
+	Tab            string      `json:"tab"`
+	View           slack.View  `json:"view"`
 }
 
 // AppUninstalledEvent Your Slack app was uninstalled.
@@ -98,6 +112,59 @@ type MemberJoinedChannelEvent struct {
 	Inviter     string `json:"inviter"`
 }
 
+type pinEvent struct {
+	Type           string `json:"type"`
+	User           string `json:"user"`
+	Item           Item   `json:"item"`
+	Channel        string `json:"channel_id"`
+	EventTimestamp string `json:"event_ts"`
+	HasPins        bool   `json:"has_pins,omitempty"`
+}
+
+type reactionEvent struct {
+	Type           string `json:"type"`
+	User           string `json:"user"`
+	Reaction       string `json:"reaction"`
+	ItemUser       string `json:"item_user"`
+	Item           Item   `json:"item"`
+	EventTimestamp string `json:"event_ts"`
+}
+
+// ReactionAddedEvent An reaction was added to a message - https://api.slack.com/events/reaction_added
+type ReactionAddedEvent reactionEvent
+
+// ReactionRemovedEvent An reaction was removed from a message - https://api.slack.com/events/reaction_removed
+type ReactionRemovedEvent reactionEvent
+
+// PinAddedEvent An item was pinned to a channel - https://api.slack.com/events/pin_added
+type PinAddedEvent pinEvent
+
+// PinRemovedEvent An item was unpinned from a channel - https://api.slack.com/events/pin_removed
+type PinRemovedEvent pinEvent
+
+type tokens struct {
+	Oauth []string `json:"oauth"`
+	Bot   []string `json:"bot"`
+}
+
+// TokensRevokedEvent APP's API tokes are revoked - https://api.slack.com/events/tokens_revoked
+type TokensRevokedEvent struct {
+	Type   string `json:"type"`
+	Tokens tokens `json:"tokens"`
+}
+
+// JSONTime exists so that we can have a String method converting the date
+type JSONTime int64
+
+// Comment contains all the information relative to a comment
+type Comment struct {
+	ID        string   `json:"id,omitempty"`
+	Created   JSONTime `json:"created,omitempty"`
+	Timestamp JSONTime `json:"timestamp,omitempty"`
+	User      string   `json:"user,omitempty"`
+	Comment   string   `json:"comment,omitempty"`
+}
+
 // File is a file upload
 type File struct {
 	ID                 string `json:"id"`
@@ -160,6 +227,27 @@ type Icon struct {
 	IconEmoji string `json:"icon_emoji,omitempty"`
 }
 
+// Item is any type of slack message - message, file, or file comment.
+type Item struct {
+	Type      string       `json:"type"`
+	Channel   string       `json:"channel,omitempty"`
+	Message   *ItemMessage `json:"message,omitempty"`
+	File      *File        `json:"file,omitempty"`
+	Comment   *Comment     `json:"comment,omitempty"`
+	Timestamp string       `json:"ts,omitempty"`
+}
+
+// ItemMessage is the event message
+type ItemMessage struct {
+	Type            string   `json:"type"`
+	User            string   `json:"user"`
+	Text            string   `json:"text"`
+	Timestamp       string   `json:"ts"`
+	PinnedTo        []string `json:"pinned_to"`
+	ReplaceOriginal bool     `json:"replace_original"`
+	DeleteOriginal  bool     `json:"delete_original"`
+}
+
 // IsEdited checks if the MessageEvent is caused by an edit
 func (e MessageEvent) IsEdited() bool {
 	return e.Message != nil &&
@@ -169,6 +257,8 @@ func (e MessageEvent) IsEdited() bool {
 const (
 	// AppMention is an Events API subscribable event
 	AppMention = "app_mention"
+	// AppHomeOpened Your Slack app home was opened
+	AppHomeOpened = "app_home_opened"
 	// AppUninstalled Your Slack app was uninstalled.
 	AppUninstalled = "app_uninstalled"
 	// GridMigrationFinished An enterprise grid migration has finished on this workspace.
@@ -181,6 +271,16 @@ const (
 	Message = "message"
 	// Member Joined Channel
 	MemberJoinedChannel = "member_joined_channel"
+	// PinAdded An item was pinned to a channel
+	PinAdded = "pin_added"
+	// PinRemoved An item was unpinned from a channel
+	PinRemoved = "pin_removed"
+	// ReactionAdded An reaction was added to a message
+	ReactionAdded = "reaction_added"
+	// ReactionRemoved An reaction was removed from a message
+	ReactionRemoved = "reaction_removed"
+	// TokensRevoked APP's API tokes are revoked
+	TokensRevoked = "tokens_revoked"
 )
 
 // EventsAPIInnerEventMapping maps INNER Event API events to their corresponding struct
@@ -188,10 +288,16 @@ const (
 // target for the matching event type.
 var EventsAPIInnerEventMapping = map[string]interface{}{
 	AppMention:            AppMentionEvent{},
+	AppHomeOpened:         AppHomeOpenedEvent{},
 	AppUninstalled:        AppUninstalledEvent{},
 	GridMigrationFinished: GridMigrationFinishedEvent{},
 	GridMigrationStarted:  GridMigrationStartedEvent{},
 	LinkShared:            LinkSharedEvent{},
 	Message:               MessageEvent{},
 	MemberJoinedChannel:   MemberJoinedChannelEvent{},
+	PinAdded:              PinAddedEvent{},
+	PinRemoved:            PinRemovedEvent{},
+	ReactionAdded:         ReactionAddedEvent{},
+	ReactionRemoved:       ReactionRemovedEvent{},
+	TokensRevoked:         TokensRevokedEvent{},
 }
